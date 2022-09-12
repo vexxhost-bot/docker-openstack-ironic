@@ -43,6 +43,7 @@ jobs:
           RELEASE=${{ matrix.release }}
           PROJECT=ironic
           PROJECT_REF=${{ env.PROJECT_REF }}
+          EXTRAS=
           PROFILES=ipxe ipmi qemu tftp
           DIST_PACKAGES=ethtool lshw iproute2
           PIP_PACKAGES=python-dracclient sushy
