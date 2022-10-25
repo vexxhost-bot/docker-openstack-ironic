@@ -48,7 +48,7 @@ jobs:
           EXTRAS=
           PROFILES=ipxe ipmi qemu tftp
           DIST_PACKAGES=ethtool lshw iproute2
-          PIP_PACKAGES=python-dracclient sushy
+          PIP_PACKAGES=cryptography python-dracclient sushy
         cache-from: type=gha,scope=${{ matrix.release }}
         cache-to: type=gha,mode=max,scope=${{ matrix.release }}
         context: .
