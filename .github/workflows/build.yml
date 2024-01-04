@@ -2,7 +2,7 @@ name: build
 concurrency:
   group: ${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
-on:
+"on":
   pull_request:
     types:
     - opened
@@ -13,6 +13,11 @@ on:
     - main
 jobs:
   image:
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      security-events: write
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -21,6 +26,8 @@ jobs:
           release: zed
         - from: focal
           release: "2023.1"
+        - from: focal
+          release: "2023.2"
         - from: jammy
           release: wallaby
         - from: jammy
@@ -34,6 +41,7 @@ jobs:
         - yoga
         - zed
         - "2023.1"
+        - "2023.2"
     steps:
     - name: Install QEMU static binaries
       uses: docker/setup-qemu-action@v2
@@ -50,12 +58,53 @@ jobs:
         password: ${{ secrets.QUAY_ROBOT_TOKEN }}
         registry: quay.io
         username: ${{ secrets.QUAY_USERNAME }}
+    - name: Install cosign
+      uses: sigstore/cosign-installer@main
+    - name: Verify images
+      run: |-
+        cosign verify --certificate-oidc-issuer=https://token.actions.githubusercontent.com --certificate-identity=https://github.com/vexxhost/docker-openstack-builder/.github/workflows/build.yml@refs/heads/main quay.io/vexxhost/openstack-builder-${{ matrix.from }}:1e91e346ed4164361923475e3cfb6f8bc433cb70
+        cosign verify --certificate-oidc-issuer=https://token.actions.githubusercontent.com --certificate-identity=https://github.com/vexxhost/docker-openstack-runtime/.github/workflows/build.yml@refs/heads/main quay.io/vexxhost/openstack-runtime-${{ matrix.from }}:9080bbaebe90d82e96c57144afc0aaeb33a9180b
     - name: Build image
       uses: docker/build-push-action@v3
       with:
         build-args: |-
-          BUILDER_IMAGE=quay.io/vexxhost/openstack-builder-${{ matrix.from }}
-          RUNTIME_IMAGE=quay.io/vexxhost/openstack-runtime-${{ matrix.from }}
+          BUILDER_IMAGE=quay.io/vexxhost/openstack-builder-${{ matrix.from }}:1e91e346ed4164361923475e3cfb6f8bc433cb70
+          RUNTIME_IMAGE=quay.io/vexxhost/openstack-runtime-${{ matrix.from }}:9080bbaebe90d82e96c57144afc0aaeb33a9180b
+          RELEASE=${{ matrix.release }}
+          PROJECT=ironic
+          PROJECT_REPO=https://github.com/openstack/ironic
+          PROJECT_REF=${{ env.PROJECT_REF }}
+          EXTRAS=
+          PROFILES=ipxe ipmi qemu tftp
+          DIST_PACKAGES=ethtool lshw iproute2
+          PIP_PACKAGES=cryptography python-binary-memcached python-dracclient sushy
+        cache-from: type=gha,scope=${{ matrix.from }}-${{ matrix.release }}
+        cache-to: type=gha,mode=max,scope=${{ matrix.from }}-${{ matrix.release }}
+        context: .
+        load: "true"
+        tags: quay.io/vexxhost/ironic:${{ env.PROJECT_REF }}-${{ matrix.from }}-${{ github.sha }}
+      env:
+        DOCKER_CONTENT_TRUST: "1"
+    - name: Scan image for vulnerabilities
+      uses: aquasecurity/trivy-action@master
+      with:
+        format: sarif
+        ignore-unfixed: "true"
+        image-ref: quay.io/vexxhost/ironic:${{ env.PROJECT_REF }}-${{ matrix.from }}-${{ github.sha }}
+        output: trivy-results.sarif
+    - name: Upload scan result
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        category: ${{ env.PROJECT_REF }}-${{ matrix.from }}
+        sarif_file: trivy-results.sarif
+    - name: Build image
+      id: push-step
+      uses: docker/build-push-action@v3
+      with:
+        build-args: |-
+          BUILDER_IMAGE=quay.io/vexxhost/openstack-builder-${{ matrix.from }}:1e91e346ed4164361923475e3cfb6f8bc433cb70
+          RUNTIME_IMAGE=quay.io/vexxhost/openstack-runtime-${{ matrix.from }}:9080bbaebe90d82e96c57144afc0aaeb33a9180b
           RELEASE=${{ matrix.release }}
           PROJECT=ironic
           PROJECT_REPO=https://github.com/openstack/ironic
@@ -69,10 +118,16 @@ jobs:
         context: .
         platforms: linux/amd64
         push: ${{ github.event_name == 'push' }}
-        tags: quay.io/vexxhost/ironic:${{ env.PROJECT_REF }}-${{ matrix.from }}
+        sbom: "true"
+        tags: quay.io/vexxhost/ironic:${{ env.PROJECT_REF }}-${{ matrix.from }}-${{ github.sha }}
+      env:
+        DOCKER_CONTENT_TRUST: "1"
     - name: Promote image
       uses: akhilerm/tag-push-action@v2.0.0
       if: github.event_name == 'push' && ((matrix.from == 'focal') || (matrix.from == 'jammy' && matrix.release != 'yoga'))
       with:
         dst: quay.io/vexxhost/ironic:${{ matrix.release }}
-        src: quay.io/vexxhost/ironic:${{ env.PROJECT_REF }}-${{ matrix.from }}
+        src: quay.io/vexxhost/ironic:${{ env.PROJECT_REF }}-${{ matrix.from }}-${{ github.sha }}
+    - name: Sign the container image
+      run: cosign sign --yes quay.io/vexxhost/horizon@${{ steps.push-step.outputs.digest }}
+      if: ${{ github.event_name == 'push' }}
